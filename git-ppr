@@ -1,0 +1,49 @@
+
+REPO=$1
+ID=$2
+
+ALREADY_PATCH=$(git log -100 --pretty="%H" --grep="PPR: $REPO #$ID")
+if [ -n "$ALREADY_PATCH" ]; then
+	echo "Found PR: $REPO #$ID at $ALREADY_PATCH"
+	exit 1
+fi
+
+BRANCH=$(git branch | sed -n '/\* /s///p')
+
+PR=$(wget -qO- https://api.github.com/repos/$REPO/pulls/$ID)
+PATCH_URL=$(echo $PR | jq -r .patch_url)
+
+if git show-ref --verify --quiet "refs/heads/${BRANCH}.pr"; then
+	git checkout ${BRANCH}.pr
+else
+	git checkout --orphan ${BRANCH}.pr
+	git rm -rf * > /dev/null
+	git rm -rf . > /dev/null
+	git clean -f
+fi
+
+if git ls-tree ${BRANCH}.pr $REPO/$ID | grep $REPO/$ID; then
+	echo "Use existing patch"
+else
+	echo "Getting PR from: $PATCH_URL"
+	mkdir -p $REPO
+	wget -q -O $REPO/$ID "$PATCH_URL"
+	git add $REPO/$ID
+	git commit -m "patch $REPO/$ID"
+fi
+
+# patch
+git checkout ${BRANCH}
+echo "Done picking PR from: $PATCH_URL"
+git show ${BRANCH}.pr:$REPO/$ID | patch -s -p 1
+
+# get HEAD label for this patch
+LABEL=$(echo $PR | jq -r .head.label)
+LABEL=${LABEL/://}
+
+# create new squash commit
+git add .
+git commit -q -m "PPR: $REPO #$ID from $LABEL
+
+Pull-Request: http://github.com/$REPO/pull/$ID
+"
